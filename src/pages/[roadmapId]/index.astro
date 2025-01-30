@@ -7,12 +7,13 @@ import RoadmapHeader from '../../components/RoadmapHeader.astro';
 import ShareIcons from '../../components/ShareIcons/ShareIcons.astro';
 import { TopicDetail } from '../../components/TopicDetail/TopicDetail';
 import UpcomingForm from '../../components/UpcomingForm.astro';
+import { UserProgressModal } from '../../components/UserProgress/UserProgressModal';
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import {
-generateArticleSchema,
-generateFAQSchema,
+  generateArticleSchema,
+  generateFAQSchema,
 } from '../../lib/jsonld-schema';
-import { RoadmapFrontmatter,getRoadmapIds } from '../../lib/roadmap';
+import { type RoadmapFrontmatter, getRoadmapIds } from '../../lib/roadmap';
 
 export async function getStaticPaths() {
   const roadmapIds = await getRoadmapIds();
@@ -47,25 +48,27 @@ if (roadmapData.schema) {
       datePublished: roadmapSchema.datePublished,
       dateModified: roadmapSchema.dateModified,
       imageUrl: roadmapSchema.imageUrl,
-    })
+    }),
   );
 }
 
 if (roadmapFAQs.length) {
   jsonLdSchema.push(generateFAQSchema(roadmapFAQs));
 }
-
-const contentContributionLink = `https://github.com/kamranahmedse/developer-roadmap/tree/master/src/data/roadmaps/${roadmapId}/content`;
 ---
 
 <BaseLayout
   permalink={`/${roadmapId}`}
   title={roadmapData?.seo?.title}
-  briefTitle={roadmapData?.briefTitle}
+  briefTitle={roadmapData.briefTitle}
+  ogImageUrl={roadmapData?.seo?.ogImageUrl ||
+    'https://roadmap.sh/images/og-img.png'}
   description={roadmapData.seo.description}
   keywords={roadmapData.seo.keywords}
   noIndex={roadmapData.isUpcoming}
   jsonLd={jsonLdSchema}
+  resourceId={roadmapId}
+  resourceType='roadmap'
 >
   <!-- Preload the font being used in the renderer -->
   <link
@@ -85,41 +88,38 @@ const contentContributionLink = `https://github.com/kamranahmedse/developer-road
     roadmapId={roadmapId}
     hasTopics={roadmapData.hasTopics}
     isUpcoming={roadmapData.isUpcoming}
+    isForkable={roadmapData.isForkable}
+    question={roadmapData.question}
   />
 
   <div class='bg-gray-50 pt-4 sm:pt-12'>
     {
-      !roadmapData.isUpcoming && roadmapData.jsonUrl && (
-        <div class='container relative max-w-[1000px]'>
+      !roadmapData.isUpcoming && (
+        <div class='container relative !max-w-[1000px]'>
           <ShareIcons
             description={roadmapData.briefDescription}
             pageUrl={`https://roadmap.sh/${roadmapId}`}
           />
-          <TopicDetail client:idle />
+          <TopicDetail client:idle canSubmitContribution={true} />
 
           <FrameRenderer
             resourceType={'roadmap'}
             resourceId={roadmapId}
-            jsonUrl={roadmapData.jsonUrl}
             dimensions={roadmapData.dimensions}
           />
         </div>
       )
     }
 
-    {
-      !roadmapData.isUpcoming && !roadmapData.jsonUrl && (
-        <div class='mt-0 pb-14 sm:-mt-6'>
-          <MarkdownFile>
-            <roadmapFile.Content />
-          </MarkdownFile>
-        </div>
-      )
-    }
-
     {roadmapData.isUpcoming && <UpcomingForm />}
+    <UserProgressModal
+      resourceId={roadmapId}
+      resourceType='roadmap'
+      client:only='react'
+    />
 
     <FAQs faqs={roadmapFAQs} />
+
     <RelatedRoadmaps roadmap={roadmapData} />
   </div>
 </BaseLayout>

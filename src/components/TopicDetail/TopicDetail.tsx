@@ -1,9 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import CheckIcon from '../../icons/check.svg';
-import CloseIcon from '../../icons/close.svg';
-import ProgressIcon from '../../icons/progress.svg';
-import ResetIcon from '../../icons/reset.svg';
-import SpinnerIcon from '../../icons/spinner.svg';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useKeydown } from '../../hooks/use-keydown';
 import { useLoadTopic } from '../../hooks/use-load-topic';
@@ -11,25 +6,57 @@ import { useOutsideClick } from '../../hooks/use-outside-click';
 import { useToggleTopic } from '../../hooks/use-toggle-topic';
 import { httpGet } from '../../lib/http';
 import { isLoggedIn } from '../../lib/jwt';
+import type { ResourceType } from '../../lib/resource-progress';
 import {
-  getTopicStatus,
   isTopicDone,
+  refreshProgressCounters,
   renderTopicProgress,
-  ResourceProgressType,
-  ResourceType,
   updateResourceProgress as updateResourceProgressApi,
 } from '../../lib/resource-progress';
-import { pageLoadingMessage, sponsorHidden } from '../../stores/page';
+import { pageProgressMessage, sponsorHidden } from '../../stores/page';
+import { TopicProgressButton } from './TopicProgressButton';
+import { showLoginPopup } from '../../lib/popup';
+import { useToast } from '../../hooks/use-toast';
+import type {
+  AllowedLinkTypes,
+  RoadmapContentDocument,
+} from '../CustomRoadmap/CustomRoadmap';
+import { markdownToHtml, sanitizeMarkdown } from '../../lib/markdown';
+import { cn } from '../../lib/classname';
+import { Ban, FileText, X } from 'lucide-react';
+import { getUrlParams } from '../../lib/browser';
+import { Spinner } from '../ReactIcons/Spinner';
+import { GitHubIcon } from '../ReactIcons/GitHubIcon.tsx';
 
-export function TopicDetail() {
+type TopicDetailProps = {
+  isEmbed?: boolean;
+  canSubmitContribution: boolean;
+};
+
+const linkTypes: Record<AllowedLinkTypes, string> = {
+  article: 'bg-yellow-200',
+  course: 'bg-green-200',
+  opensource: 'bg-blue-200',
+  podcast: 'bg-purple-200',
+  video: 'bg-pink-200',
+  website: 'bg-red-200',
+};
+
+export function TopicDetail(props: TopicDetailProps) {
+  const { canSubmitContribution, isEmbed = false } = props;
+
+  const [hasEnoughLinks, setHasEnoughLinks] = useState(false);
+  const [contributionUrl, setContributionUrl] = useState('');
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isContributing, setIsContributing] = useState(false);
   const [error, setError] = useState('');
   const [topicHtml, setTopicHtml] = useState('');
+  const [topicTitle, setTopicTitle] = useState('');
+  const [links, setLinks] = useState<RoadmapContentDocument['links']>([]);
+  const toast = useToast();
 
-  const [progress, setProgress] = useState<ResourceProgressType>('pending');
-  const [isUpdatingProgress, setIsUpdatingProgress] = useState(true);
-
+  const { secret } = getUrlParams() as { secret: string };
   const isGuest = useMemo(() => !isLoggedIn(), []);
   const topicRef = useRef<HTMLDivElement>(null);
 
@@ -37,63 +64,6 @@ export function TopicDetail() {
   const [topicId, setTopicId] = useState('');
   const [resourceId, setResourceId] = useState('');
   const [resourceType, setResourceType] = useState<ResourceType>('roadmap');
-
-  const showLoginPopup = () => {
-    const popupEl = document.querySelector(`#login-popup`);
-    if (!popupEl) {
-      return;
-    }
-
-    popupEl.classList.remove('hidden');
-    popupEl.classList.add('flex');
-    const focusEl = popupEl.querySelector<HTMLElement>('[autofocus]');
-    if (focusEl) {
-      focusEl.focus();
-    }
-  };
-
-  const handleUpdateResourceProgress = (progress: ResourceProgressType) => {
-    setIsUpdatingProgress(true);
-    updateResourceProgressApi(
-      {
-        topicId,
-        resourceId,
-        resourceType,
-      },
-      progress
-    )
-      .then(() => {
-        setProgress(progress);
-        setIsActive(false);
-        renderTopicProgress(
-          topicId,
-          progress === 'done',
-          progress === 'learning'
-        );
-      })
-      .catch((err) => {
-        alert(err.message);
-        console.error(err);
-      })
-      .finally(() => {
-        setIsUpdatingProgress(false);
-      });
-  };
-
-  // Load the topic status when the topic detail is active
-  useEffect(() => {
-    if (!topicId || !resourceId || !resourceType) {
-      return;
-    }
-
-    setIsUpdatingProgress(true);
-    getTopicStatus({ topicId, resourceId, resourceType })
-      .then((status) => {
-        setIsUpdatingProgress(false);
-        setProgress(status);
-      })
-      .catch(console.error);
-  }, [topicId, resourceId, resourceType]);
 
   // Close the topic detail when user clicks outside the topic detail
   useOutsideClick(topicRef, () => {
@@ -113,35 +83,39 @@ export function TopicDetail() {
       return;
     }
 
-    pageLoadingMessage.set('Updating');
+    pageProgressMessage.set('Updating');
 
     // Toggle the topic status
     isTopicDone({ topicId, resourceId, resourceType })
-      .then((oldIsDone) => {
-        return updateResourceProgressApi(
+      .then((oldIsDone) =>
+        updateResourceProgressApi(
           {
             topicId,
             resourceId,
             resourceType,
           },
-          oldIsDone ? 'pending' : 'done'
+          oldIsDone ? 'pending' : 'done',
+        ),
+      )
+      .then(({ done = [] }) => {
+        renderTopicProgress(
+          topicId,
+          done.includes(topicId) ? 'done' : 'pending',
         );
-      })
-      .then((updatedResult) => {
-        const newIsDone = updatedResult.done.includes(topicId);
-        renderTopicProgress(topicId, newIsDone, false);
+        refreshProgressCounters();
       })
       .catch((err) => {
-        alert(err.message);
+        toast.error(err.message);
         console.error(err);
       })
       .finally(() => {
-        pageLoadingMessage.set('');
+        pageProgressMessage.set('');
       });
   });
 
   // Load the topic detail when the topic detail is active
-  useLoadTopic(({ topicId, resourceType, resourceId }) => {
+  useLoadTopic(({ topicId, resourceType, resourceId, isCustomResource }) => {
+    setError('');
     setIsLoading(true);
     setIsActive(true);
     sponsorHidden.set(true);
@@ -151,30 +125,60 @@ export function TopicDetail() {
     setResourceId(resourceId);
 
     const topicPartial = topicId.replaceAll(':', '/');
-    const topicUrl =
+    let topicUrl =
       resourceType === 'roadmap'
         ? `/${resourceId}/${topicPartial}`
         : `/best-practices/${resourceId}/${topicPartial}`;
 
-    httpGet<string>(
+    if (isCustomResource) {
+      topicUrl = `${
+        import.meta.env.PUBLIC_API_URL
+      }/v1-get-node-content/${resourceId}/${topicId}${
+        secret ? `?secret=${secret}` : ''
+      }`;
+    }
+
+    httpGet<string | RoadmapContentDocument>(
       topicUrl,
       {},
       {
-        headers: {
-          Accept: 'text/html',
-        },
-      }
+        ...(!isCustomResource && {
+          headers: {
+            Accept: 'text/html',
+          },
+        }),
+      },
     )
       .then(({ response }) => {
         if (!response) {
           setError('Topic not found.');
+          setIsLoading(false);
           return;
         }
+        let topicHtml = '';
+        if (!isCustomResource) {
+          topicHtml = response as string;
+          const topicDom = new DOMParser().parseFromString(
+            topicHtml,
+            'text/html',
+          );
 
-        // It's full HTML with page body, head etc.
-        // We only need the inner HTML of the #main-content
-        const node = new DOMParser().parseFromString(response, 'text/html');
-        const topicHtml = node?.getElementById('main-content')?.outerHTML || '';
+          const links = topicDom.querySelectorAll('a');
+          const urlElem: HTMLElement =
+            topicDom.querySelector('[data-github-url]')!;
+          const contributionUrl = urlElem?.dataset?.githubUrl || '';
+
+          setContributionUrl(contributionUrl);
+          setHasEnoughLinks(links.length >= 3);
+        } else {
+          setLinks((response as RoadmapContentDocument)?.links || []);
+          setTopicTitle((response as RoadmapContentDocument)?.title || '');
+
+          const sanitizedMarkdown = sanitizeMarkdown(
+            (response as RoadmapContentDocument).description || '',
+          );
+          topicHtml = markdownToHtml(sanitizedMarkdown, false);
+        }
 
         setIsLoading(false);
         setTopicHtml(topicHtml);
@@ -185,134 +189,148 @@ export function TopicDetail() {
       });
   });
 
+  useEffect(() => {
+    if (isActive) topicRef?.current?.focus();
+  }, [isActive]);
+
   if (!isActive) {
     return null;
   }
 
+  const hasContent = topicHtml?.length > 0 || links?.length > 0 || topicTitle;
+
   return (
-    <div>
+    <div className={'relative z-50'}>
       <div
         ref={topicRef}
-        className="fixed right-0 top-0 z-40 h-screen w-full overflow-y-auto bg-white p-4 sm:max-w-[600px] sm:p-6"
+        tabIndex={0}
+        className="fixed right-0 top-0 z-40 h-screen w-full overflow-y-auto bg-white p-4 focus:outline-0 sm:max-w-[600px] sm:p-6"
       >
         {isLoading && (
           <div className="flex w-full justify-center">
-            <img
-              src={SpinnerIcon}
-              alt="Loading"
-              className="h-6 w-6 animate-spin fill-blue-600 text-gray-200 sm:h-12 sm:w-12"
+            <Spinner
+              outerFill="#d1d5db"
+              className="h-6 w-6 sm:h-12 sm:w-12"
+              innerFill="#2563eb"
             />
           </div>
         )}
 
-        {!isLoading && !error && (
+        {!isContributing && !isLoading && !error && (
           <>
             {/* Actions for the topic */}
             <div className="mb-2">
-              {isGuest && (
-                <div className="flex items-center gap-2">
-                  <button
-                    data-popup="login-popup"
-                    className="inline-flex items-center rounded-md bg-green-600 p-1 px-2 text-sm text-white hover:bg-green-700"
-                    onClick={() => setIsActive(false)}
-                  >
-                    <img alt="Check" class="w-3" src={CheckIcon} />
-                    <span className="ml-2">Done</span>
-                  </button>
-                  <button
-                    data-popup="login-popup"
-                    className="inline-flex items-center rounded-md bg-[#dad1fd] p-1 px-2 text-sm text-[#0E033B] hover:bg-[#C4B6FC]"
-                    onClick={() => setIsActive(false)}
-                  >
-                    <img alt="Learning" class="w-4" src={ProgressIcon} />
-                    <span className="ml-2">In Progress</span>
-                  </button>
-                </div>
-              )}
-
-              {!isGuest && (
-                <>
-                  {isUpdatingProgress && (
-                    <button className="inline-flex cursor-default items-center rounded-md border border-gray-300 bg-white p-1 px-2 text-sm text-black">
-                      <img
-                        alt="Check"
-                        class="h-4 w-4 animate-spin"
-                        src={SpinnerIcon}
-                      />
-                      <span className="ml-2">Updating Status..</span>
-                    </button>
-                  )}
-                  {!isUpdatingProgress && progress === 'pending' && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="inline-flex items-center rounded-md border border-green-600 bg-green-600 p-1 px-2 text-sm text-white hover:bg-green-700"
-                        onClick={() => handleUpdateResourceProgress('done')}
-                      >
-                        <img alt="Check" class="w-3" src={CheckIcon} />
-                        <span className="ml-2">Done</span>
-                      </button>
-
-                      <button
-                        className="inline-flex items-center rounded-md bg-[#dad1fd] p-1 px-2 text-sm text-[#0E033B] hover:bg-[#C4B6FC]"
-                        onClick={() => handleUpdateResourceProgress('learning')}
-                      >
-                        <img alt="Learning" class="w-4" src={ProgressIcon} />
-                        <span className="ml-2">In Progress</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {!isUpdatingProgress && progress === 'done' && (
-                    <button
-                      className="inline-flex items-center rounded-md border border-red-600 bg-red-600 p-1 px-2 text-sm text-white hover:bg-red-700"
-                      onClick={() => handleUpdateResourceProgress('pending')}
-                    >
-                      <img alt="Check" class="h-4" src={ResetIcon} />
-                      <span className="ml-2">Pending</span>
-                    </button>
-                  )}
-
-                  {!isUpdatingProgress && progress === 'learning' && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="inline-flex items-center rounded-md border border-green-600 bg-green-600 p-1 px-2 text-sm text-white hover:bg-green-700"
-                        onClick={() => handleUpdateResourceProgress('done')}
-                      >
-                        <img alt="Check" class="w-3" src={CheckIcon} />
-                        <span className="ml-2">Done</span>
-                      </button>
-                      <button
-                        className="inline-flex items-center rounded-md border border-red-600 bg-red-600 p-1 px-2 text-sm text-white hover:bg-red-700"
-                        onClick={() => handleUpdateResourceProgress('pending')}
-                      >
-                        <img alt="Check" class="h-4" src={ResetIcon} />
-                        <span className="ml-2">Pending</span>
-                      </button>
-                    </div>
-                  )}
-                </>
+              {!isEmbed && (
+                <TopicProgressButton
+                  topicId={topicId}
+                  resourceId={resourceId}
+                  resourceType={resourceType}
+                  onClose={() => {
+                    setIsActive(false);
+                  }}
+                />
               )}
 
               <button
                 type="button"
                 id="close-topic"
                 className="absolute right-2.5 top-2.5 inline-flex items-center rounded-lg bg-transparent p-1.5 text-sm text-gray-400 hover:bg-gray-200 hover:text-gray-900"
-                onClick={() => setIsActive(false)}
+                onClick={() => {
+                  setIsActive(false);
+                }}
               >
-                <img alt="Close" class="h-5 w-5" src={CloseIcon} />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
             {/* Topic Content */}
-            <div
-              id="topic-content"
-              className="prose prose-quoteless prose-h1:mb-2.5 prose-h1:mt-7 prose-h2:mb-3 prose-h2:mt-0 prose-h3:mb-[5px] prose-h3:mt-[10px] prose-p:mb-2 prose-p:mt-0 prose-blockquote:font-normal prose-blockquote:not-italic prose-blockquote:text-gray-700 prose-li:m-0 prose-li:mb-0.5"
-              dangerouslySetInnerHTML={{ __html: topicHtml }}
-            ></div>
+            {hasContent ? (
+              <div className="prose prose-quoteless prose-h1:mb-2.5 prose-h1:mt-7 prose-h2:mb-3 prose-h2:mt-0 prose-h3:mb-[5px] prose-h3:mt-[10px] prose-p:mb-2 prose-p:mt-0 prose-blockquote:font-normal prose-blockquote:not-italic prose-blockquote:text-gray-700 prose-li:m-0 prose-li:mb-0.5">
+                {topicTitle && <h1>{topicTitle}</h1>}
+                <div
+                  id="topic-content"
+                  dangerouslySetInnerHTML={{ __html: topicHtml }}
+                />
+              </div>
+            ) : (
+              <div className="flex h-[calc(100%-38px)] flex-col items-center justify-center">
+                <FileText className="h-16 w-16 text-gray-300" />
+                <p className="mt-2 text-lg font-medium text-gray-500">
+                  Empty Content
+                </p>
+              </div>
+            )}
+
+            {links.length > 0 && (
+              <ul className="mt-6 space-y-1">
+                {links.map((link) => {
+                  return (
+                    <li>
+                      <a
+                        href={link.url}
+                        target="_blank"
+                        className="font-medium underline"
+                      >
+                        <span
+                          className={cn(
+                            'mr-2 inline-block rounded px-1.5 py-1 text-xs uppercase no-underline',
+                            linkTypes[link.type],
+                          )}
+                        >
+                          {link.type.charAt(0).toUpperCase() +
+                            link.type.slice(1)}
+                        </span>
+                        {link.title}
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {/* Contribution */}
+            {canSubmitContribution && !hasEnoughLinks && contributionUrl && (
+              <div className="mt-8 flex-1 border-t">
+                <p className="mb-2 mt-2 text-sm leading-relaxed text-gray-400">
+                  Help us improve this introduction and submit a link to a good
+                  article, podcast, video, or any other resource that helped you
+                  understand this topic better.
+                </p>
+                <a
+                  href={contributionUrl}
+                  target={'_blank'}
+                  className="flex w-full items-center justify-center rounded-md bg-gray-800 p-2 text-sm text-white transition-colors hover:bg-black hover:text-white disabled:bg-green-200 disabled:text-black"
+                >
+                  <GitHubIcon className="mr-2 inline-block h-4 w-4 text-white" />
+                  Edit this Content
+                </a>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Error */}
+        {!isContributing && !isLoading && error && (
+          <>
+            <button
+              type="button"
+              id="close-topic"
+              className="absolute right-2.5 top-2.5 inline-flex items-center rounded-lg bg-transparent p-1.5 text-sm text-gray-400 hover:bg-gray-200 hover:text-gray-900"
+              onClick={() => {
+                setIsActive(false);
+                setIsContributing(false);
+              }}
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="flex h-full flex-col items-center justify-center">
+              <Ban className="h-16 w-16 text-red-500" />
+              <p className="mt-2 text-lg font-medium text-red-500">{error}</p>
+            </div>
           </>
         )}
       </div>
-      <div class="fixed inset-0 z-30 bg-gray-900 bg-opacity-50 dark:bg-opacity-80"></div>
+      <div className="fixed inset-0 z-30 bg-gray-900 bg-opacity-50 dark:bg-opacity-80"></div>
     </div>
   );
 }
